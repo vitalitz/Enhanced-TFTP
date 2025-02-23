@@ -122,10 +122,6 @@ To specify a custom port:
 └── build/                # Compiled binaries & log files
 ```
 
-## License
-
-This project is licensed under the MIT License.
-
 ## Author
 
 Vitali Tziganov
