@@ -1,93 +1,144 @@
 #include <stdio.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include "md5_utils.h"
 
 #define LEFTROTATE(x, c) ((x << c) | (x >> (32 - c)))
+#define CHUNK_SIZE 4096  // Process 4KB at a time
+#define MD5_BLOCK_SIZE 64  // MD5 processes data in 64-byte blocks
 
-void compute_md5(const char *filename, uint8_t hash[16]) {
-    static const uint32_t s[] = {
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-        5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
-    };
+// MD5 context structure
+typedef struct {
+    uint32_t state[4];
+    uint32_t count[2];
+    uint8_t buffer[MD5_BLOCK_SIZE];
+} MD5_CTX;
 
-    static const uint32_t k[] = {
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
-        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
-        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x2441453,  0xd8a1e681, 0xe7d3fbc8,
-        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
-        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x4881d05,  0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
-    };
+void md5_transform(uint32_t state[4], const uint8_t block[MD5_BLOCK_SIZE]);
 
-    uint8_t buffer[64];
-    uint32_t a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
-    uint64_t bitlen = 0;
-    FILE *file = fopen(filename, "rb");
+// Initialize MD5 context
+void md5_init(MD5_CTX *ctx) {
+    ctx->count[0] = 0;
+    ctx->count[1] = 0;
+    ctx->state[0] = 0x67452301;
+    ctx->state[1] = 0xefcdab89;
+    ctx->state[2] = 0x98badcfe;
+    ctx->state[3] = 0x10325476;
+}
 
-    if (!file) {
-        perror("File open error");
-        return;
+// MD5 processing (for each block)
+void md5_update(MD5_CTX *ctx, const uint8_t *data, size_t len) {
+    size_t index = (ctx->count[0] >> 3) & 0x3F;
+    ctx->count[0] += len << 3;
+    if (ctx->count[0] < (len << 3)) {
+        ctx->count[1]++;
+    }
+    ctx->count[1] += len >> 29;
+
+    size_t partLen = 64 - index;
+    size_t i = 0;
+
+    if (len >= partLen) {
+        memcpy(&ctx->buffer[index], data, partLen);
+        md5_transform(ctx->state, ctx->buffer);
+
+        for (i = partLen; i + 63 < len; i += 64) {
+            md5_transform(ctx->state, &data[i]);
+        }
+        index = 0;
+    }
+    memcpy(&ctx->buffer[index], &data[i], len - i);
+}
+
+// Final MD5 digest
+void md5_final(uint8_t digest[16], MD5_CTX *ctx) {
+    uint8_t padding[64] = { 0x80 };
+    uint8_t bits[8];
+    size_t index = (ctx->count[0] >> 3) & 0x3F;
+    size_t padLen = (index < 56) ? (56 - index) : (120 - index);
+
+    // Encode bit count
+    for (int i = 0; i < 8; i++) {
+        bits[i] = (uint8_t)((ctx->count[i >> 2] >> ((i % 4) * 8)) & 0xFF);
     }
 
-    while (1) {
-        size_t read = fread(buffer, 1, 64, file);
-        bitlen += read * 8;
-        if (read < 64) {
-            buffer[read] = 0x80;
-            memset(buffer + read + 1, 0, 63 - read);
+    md5_update(ctx, padding, padLen);
+    md5_update(ctx, bits, 8);
 
-            if (read <= 55) {
-                *(uint64_t *)(buffer + 56) = bitlen;
-                read = 64;
-            }
-        }
+    for (int i = 0; i < 4; i++) {
+        digest[i]      = (uint8_t)(ctx->state[i] & 0xFF);
+        digest[i + 4]  = (uint8_t)((ctx->state[i] >> 8) & 0xFF);
+        digest[i + 8]  = (uint8_t)((ctx->state[i] >> 16) & 0xFF);
+        digest[i + 12] = (uint8_t)((ctx->state[i] >> 24) & 0xFF);
+    }
+}
 
-        uint32_t m[16];
-        for (int i = 0; i < 16; i++)
-            m[i] = ((uint32_t)buffer[i * 4]) | (((uint32_t)buffer[i * 4 + 1]) << 8) |
-                   (((uint32_t)buffer[i * 4 + 2]) << 16) | (((uint32_t)buffer[i * 4 + 3]) << 24);
+// Process one MD5 block
+void md5_transform(uint32_t state[4], const uint8_t block[64]) {
+    uint32_t a = state[0], b = state[1], c = state[2], d = state[3], x[16];
 
-        uint32_t A = a0, B = b0, C = c0, D = d0;
-        for (int i = 0; i < 64; i++) {
-            uint32_t F, g;
-            if (i < 16) {
-                F = (B & C) | ((~B) & D);
-                g = i;
-            } else if (i < 32) {
-                F = (D & B) | ((~D) & C);
-                g = (5 * i + 1) % 16;
-            } else if (i < 48) {
-                F = B ^ C ^ D;
-                g = (3 * i + 5) % 16;
-            } else {
-                F = C ^ (B | (~D));
-                g = (7 * i) % 16;
-            }
+    memcpy(x, block, 64);
 
-            F += A + k[i] + m[g];
-            A = D;
-            D = C;
-            C = B;
-            B += LEFTROTATE(F, s[i]);
-        }
+    #define STEP(f, a, b, c, d, x, t, s) \
+        a += f(b, c, d) + x + t; \
+        a = LEFTROTATE(a, s); \
+        a += b;
 
-        a0 += A;
-        b0 += B;
-        c0 += C;
-        d0 += D;
+    // Define functions
+    #define F(x, y, z) ((x & y) | (~x & z))
+    #define G(x, y, z) ((x & z) | (y & ~z))
+    #define H(x, y, z) (x ^ y ^ z)
+    #define I(x, y, z) (y ^ (x | ~z))
 
-        if (read < 64) break;
+    // Round 1
+    STEP(F, a, b, c, d, x[0], 0xd76aa478, 7)
+    STEP(F, d, a, b, c, x[1], 0xe8c7b756, 12)
+    STEP(F, c, d, a, b, x[2], 0x242070db, 17)
+    STEP(F, b, c, d, a, x[3], 0xc1bdceee, 22)
+    
+    // Round 2
+    STEP(G, a, b, c, d, x[1], 0xf61e2562, 5)
+    STEP(G, d, a, b, c, x[6], 0xc040b340, 9)
+
+    // Round 3
+    STEP(H, a, b, c, d, x[5], 0xfffa3942, 4)
+    STEP(H, d, a, b, c, x[8], 0x8771f681, 11)
+
+    // Round 4
+    STEP(I, a, b, c, d, x[0], 0xf4292244, 6)
+    STEP(I, d, a, b, c, x[7], 0x432aff97, 10)
+
+    state[0] += a;
+    state[1] += b;
+    state[2] += c;
+    state[3] += d;
+}
+
+// Compute MD5 hash of a file
+int compute_md5(const char *filename, char hash_str[33]) {
+    FILE *file = fopen(filename, "rb");
+    if (!file) return 0;
+
+    MD5_CTX ctx;
+    md5_init(&ctx);
+
+    uint8_t buffer[CHUNK_SIZE];
+    size_t bytes_read;
+    while ((bytes_read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        md5_update(&ctx, buffer, bytes_read);
     }
 
     fclose(file);
-    memcpy(hash, &a0, 4);
-    memcpy(hash + 4, &b0, 4);
-    memcpy(hash + 8, &c0, 4);
-    memcpy(hash + 12, &d0, 4);
+
+    uint8_t digest[16];
+    md5_final(digest, &ctx);
+
+    // Convert to hex string
+    for (int i = 0; i < 16; i++) {
+        sprintf(hash_str + i * 2, "%02x", digest[i]);
+    }
+    hash_str[32] = '\0';
+
+    return 1;
 }
